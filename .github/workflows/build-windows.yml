@@ -1,0 +1,49 @@
+name: Build Windows installer
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore: [ 'android-camp-stock/**', 'kobo-forms/**', '*.md' ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install JavaScript dependencies
+        run: npm install --no-audit --no-fund --legacy-peer-deps
+
+      - name: Run tests
+        run: |
+          npx tsc --noEmit
+          npx tsx src/types/inventory.test.ts
+          npx tsx src/utils/koboXml.test.ts
+          npx tsx src/utils/drrReport.test.ts
+          npx tsx src/utils/dailyReport.test.ts
+          npx tsx src/utils/catalogueOps.test.ts
+          npx tsx src/utils/openingBalance.test.ts
+          npx tsx src/utils/historicalBalance.test.ts
+
+      - name: Build installer
+        run: npx tauri build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: camp-stock-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi

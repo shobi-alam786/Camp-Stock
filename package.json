@@ -1,0 +1,35 @@
+{
+  "name": "react-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf dist",
+    "lint": "tsc --noEmit",
+    "tauri": "tauri",
+    "test:logic": "tsx src/types/inventory.test.ts && tsx src/utils/koboXml.test.ts && tsx src/utils/drrReport.test.ts && tsx src/utils/dailyReport.test.ts && tsx src/utils/catalogueOps.test.ts && tsx src/utils/openingBalance.test.ts && tsx src/utils/historicalBalance.test.ts && tsx src/utils/multiForm.test.ts && tsx src/utils/iomRecords.test.ts && tsx src/utils/iomExcel.test.ts && tsx src/utils/appExcel.test.ts && tsx src/services/koboSync.test.ts && tsx src/utils/syncRules.test.ts"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
+    "lucide-react": "^0.546.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^8.3.0",
+    "motion": "^12.23.24"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.27.0",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.21.0",
+    "typescript": "^7.0.2",
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

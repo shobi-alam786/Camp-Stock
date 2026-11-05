@@ -1,0 +1,28 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Camp Stock main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "https://*.kobotoolbox.org/*"
+        },
+        {
+          "url": "https://*.kobotoolbox.org"
+        },
+        {
+          "url": "https://*.kobo.iom.int/*"
+        },
+        {
+          "url": "https://*.kobo.iom.int"
+        }
+      ]
+    }
+  ]
+}
