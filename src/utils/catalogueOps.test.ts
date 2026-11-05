@@ -1,6 +1,6 @@
 import type { InventoryTransaction } from '../types/inventory.ts';
 import { INITIAL_MATERIAL_CATALOGUE, calculateCurrentStock } from '../types/inventory.ts';
-import { buildOpeningBatch, buildHandover, buildOpeningChange, buildStockBaseline, handoverSnapshot, isValidPhone, newCustomMaterial, parseBulkMaterials, validateHandover } from './catalogueOps.ts';
+import { buildOpeningBatch, buildHandover, buildOpeningChange, buildMovementStockBaselines, buildStockBaseline, handoverSnapshot, isValidPhone, newCustomMaterial, parseBulkMaterials, validateHandover } from './catalogueOps.ts';
 import { buildOpenRosaXml, parseKoboSubmissionJson } from './koboXml.ts';
 
 function assert(c: boolean, m: string) { if (!c) throw new Error(`Assertion failed: ${m}`); }
@@ -33,6 +33,27 @@ export function runCatalogueOpsTests() {
   const dispatch: InventoryTransaction = { ...t1, clientTxUuid: 'd', txType: 'DISPATCH', destinationLocationId: 'LOC-BLOCK-A', lines: [{ ...t1.lines[0], quantity: '4' }] };
   ledger = [dispatch, ...ledger];
   assert(calculateCurrentStock(lamp.code, LOC, ledger).currentStock === '6', 'current = opening - dispatch');
+
+  // --- warehouse dispatch queues the resulting balance for the Kobo Stock Balance form
+  const movement: InventoryTransaction = {
+    ...dispatch,
+    clientTxUuid: 'dispatch-snapshot-test',
+    txDateTime: '2026-10-21T10:00:00.000Z',
+    sourceLocationId: LOC,
+    destinationLocationId: 'LOC-BLOCK-A',
+    lines: [{ ...dispatch.lines[0], quantity: '4' }],
+  };
+  const movementSnapshots = buildMovementStockBaselines({
+    movement,
+    catalogue: [lamp],
+    transactions: [t1],
+    locationId: LOC,
+    now: new Date('2026-10-21T10:01:00.000Z'),
+  });
+  assert(movementSnapshots.length === 1 && movementSnapshots[0].tx.txType === 'STOCK_BASELINE', 'dispatch queues one stock balance snapshot per material');
+  assert(movementSnapshots[0].tx.lines[0].quantity === '36', `post-dispatch snapshot is 36, got ${movementSnapshots[0].tx.lines[0].quantity}`);
+  assert(calculateCurrentStock(lamp.code, LOC, [movementSnapshots[0].tx, movement, t1]).currentStock === '36', 'snapshot and dispatch preserve the calculated balance');
+
   const more = buildOpeningChange({ material: lamp, locationId: LOC, desiredQty: '20', transactions: ledger, staff: 'S' })!;
   ledger = [more, ...ledger];
   assert(calculateCurrentStock(lamp.code, LOC, ledger).currentStock === '16', 'raising opening raises current');

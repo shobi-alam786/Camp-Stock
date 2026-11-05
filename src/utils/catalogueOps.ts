@@ -80,6 +80,43 @@ export function buildSnapshotBaseline(args: {
   };
 }
 
+/** Queue Stock Balance snapshots for each material affected by a warehouse movement. */
+export function buildMovementStockBaselines(args: {
+  movement: InventoryTransaction;
+  catalogue: MaterialCatalogueItem[];
+  transactions: InventoryTransaction[];
+  locationId: string;
+  now?: Date;
+}): Array<{ tx: InventoryTransaction; replaces: boolean }> {
+  const { movement, catalogue, transactions, locationId } = args;
+  const changesWarehouseStock =
+    (movement.txType === 'RECEIPT' && movement.destinationLocationId === locationId) ||
+    (movement.txType === 'RETURN' && movement.destinationLocationId === locationId) ||
+    (movement.txType === 'DISPATCH' && movement.sourceLocationId === locationId) ||
+    ((movement.txType === 'ADJUSTMENT_POS' || movement.txType === 'ADJUSTMENT_NEG') &&
+      (movement.sourceLocationId === locationId || movement.destinationLocationId === locationId));
+  if (!changesWarehouseStock) return [];
+
+  const afterMovement = [movement, ...transactions];
+  const materialCodes = [...new Set(movement.lines.map((line) => line.materialCode))];
+  const snapshots: Array<{ tx: InventoryTransaction; replaces: boolean }> = [];
+  for (const code of materialCodes) {
+    const material = catalogue.find((item) => item.code === code);
+    if (!material) continue;
+    const desiredQty = calculateCurrentStock(code, locationId, afterMovement).currentStock;
+    const snapshot = buildSnapshotBaseline({
+      material,
+      locationId,
+      desiredQty,
+      transactions,
+      staff: movement.staffId,
+      now: args.now,
+    });
+    if (snapshot) snapshots.push(snapshot);
+  }
+  return snapshots;
+}
+
 /** Kept for older callers: the new record for a first-time stock count (never edits an existing one). */
 export function buildStockBaseline(args: {
   material: MaterialCatalogueItem; locationId: string; desiredQty: string; transactions: InventoryTransaction[]; staff: string; now?: Date;

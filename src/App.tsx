@@ -33,7 +33,7 @@ import { newId, setLastStaff } from './utils/form.ts';
 import { CatalogueManager, MaterialEdit } from './components/CatalogueManager.tsx';
 import { StaffHandover } from './components/StaffHandover.tsx';
 import { CleanRecordsModal } from './components/CleanRecordsModal.tsx';
-import { buildBaselineRecords, buildSnapshotBaseline, newCustomMaterial } from './utils/catalogueOps.ts';
+import { buildBaselineRecords, buildMovementStockBaselines, buildSnapshotBaseline, newCustomMaterial } from './utils/catalogueOps.ts';
 import { mergeRemote } from './utils/syncRules.ts';
 import { syncTransaction } from './services/syncEngine.ts';
 import { localDb } from './services/db.ts';
@@ -378,8 +378,24 @@ export default function App() {
     return null;
   };
 
-  // Handler: save a finished multi-line transaction (Dispatch / Receive forms)
-  const handleSaveTx = (tx: InventoryTransaction) => setTransactions((prev) => [tx, ...prev]);
+  // Save the movement first, then queue current Stock Balance snapshots for Kobo.
+  const handleSaveTx = (tx: InventoryTransaction) => {
+    const stockSnapshots = buildMovementStockBaselines({
+      movement: tx,
+      catalogue,
+      transactions,
+      locationId: currentLocation.id,
+    });
+    setTransactions((prev) => {
+      let next = prev;
+      for (const snapshot of stockSnapshots) {
+        next = snapshot.replaces
+          ? next.map((existing) => existing.clientTxUuid === snapshot.tx.clientTxUuid ? snapshot.tx : existing)
+          : [snapshot.tx, ...next];
+      }
+      return [tx, ...next];
+    });
+  };
 
   // Handler: custom material (never touches the 45 catalogue items)
   const handleCreateCustom = (name: string, unit: string): MaterialCatalogueItem | string => {
