@@ -21,10 +21,11 @@ class FakeKobo {
   forms: Record<string, Row[]> = { FORM_RECORDS: [], FORM_STOCK: [], FORM_HAND: [] };
   nextId = 1000;
   posts = 0; patches = 0;
+  deletes = 0;
   lastPatchBody: any;
   offline = false;
   loseNextPostResponse = false;
-  patchNotFoundOnce = false;
+  deleteFailOnce = false;
   pageSize = 1000;
 
   rowsFor(uid: string) { return this.forms[uid]; }
@@ -41,17 +42,17 @@ class FakeKobo {
     const [, uid, rest] = m;
     if (!this.forms[uid]) return this.json(404, {});
     if (rest === '' && method === 'GET') return this.json(200, { has_deployment: true, deployment__active: true, deployment__uuid: `dep-${uid}`, content: { settings: { id_string: `id_${uid}` } } });
-    if (rest === 'data/bulk/' && method === 'PATCH') {
-      if (this.patchNotFoundOnce) {
-        this.patchNotFoundOnce = false;
-        return this.json(404, { detail: 'Not found.' });
-      }
-      this.lastPatchBody = JSON.parse(init.body);
-      return this.bulk(uid, this.lastPatchBody);
-    }
     if (rest === 'data/' && method === 'GET') return this.list(uid, u);
     const one_ = /^data\/(\d+)\/$/.exec(rest);
     if (one_ && method === 'GET') { const r = this.forms[uid].find((x) => x._id === Number(one_[1])); return r ? this.json(200, r) : this.json(404, {}); }
+    if (one_ && method === 'DELETE') {
+      this.deletes++;
+      if (this.deleteFailOnce) { this.deleteFailOnce = false; return this.json(500, { detail: 'Temporary delete failure.' }); }
+      const index = this.forms[uid].findIndex((x) => x._id === Number(one_[1]));
+      if (index < 0) return this.json(404, { detail: 'Not found.' });
+      this.forms[uid].splice(index, 1);
+      return this.json(204, {});
+    }
     return this.json(404, {});
   }
 
@@ -158,33 +159,38 @@ export async function runKoboSyncTests() {
   await win.sync(); await win.sync();
   assert(stockRows().length === 1 && kobo.posts === 1, `no duplicate after syncing twice (rows ${stockRows().length}, posts ${kobo.posts})`);
 
-  // --- 3. Windows changes 585 -> 600: the original record is updated
+  // --- 3. Windows changes 585 -> 600 by posting first and cleaning up the previous row
   win.setStock(borak, '600', '2026-10-22T08:00:00.000Z');
   assert(win.ledger.filter((t) => t.txType === 'STOCK_BASELINE').length === 1, 'still ONE local record');
+  kobo.deleteFailOnce = true;
   await win.sync();
-  assert(stockRows().length === 1 && stockRows()[0]._id === originalId && qtyOf(stockRows()[0], borak.code) === 600, 'Kobo record 585 -> 600 in place');
-  assert(kobo.posts === 1 && kobo.patches === 1, `one POST, one PATCH (posts ${kobo.posts}, patches ${kobo.patches})`);
-  assert(typeof kobo.lastPatchBody.payload.submission_ids[0] === 'number', 'Kobo update uses numeric submission IDs');
-  assert(kobo.lastPatchBody.payload.data['material_lines/quantity'] === '600', 'Kobo update uses repeat-group-qualified material fields');
+  assert(stockRows().length === 2, 'new replacement stays alongside old row until delete retry');
+  assert(win.ledger.find((t) => t.txType === 'STOCK_BASELINE')!.syncStatus === 'FAILED', 'failed cleanup stays queued');
+  const replacementPosts = kobo.posts;
+  await win.sync();
+  assert(stockRows().length === 1 && qtyOf(stockRows()[0], borak.code) === 600, 'retry leaves one corrected Kobo row');
+  assert(stockRows()[0]._id !== originalId, 'replacement uses a new Kobo submission ID');
+  assert(kobo.posts === replacementPosts && kobo.deletes === 2 && kobo.patches === 0, 'retry only cleans up old row; it does not repost or PATCH');
 
-  // --- 4. Second device (Android rules) receives the change, edits 600 -> 450: original record updates, Windows receives it
+  // --- 4. Second device (Android rules) receives the change, edits 600 -> 450: replacement reaches Kobo, Windows receives it
   const and = new Device('android');
   await and.sync();
   assert(and.ledger.length === 1 && and.stock(borak) === '600', 'device 2 got the record with 600 after sync');
   and.setStock(borak, '450', '2026-10-23T08:00:00.000Z');
   await and.sync();
-  assert(stockRows().length === 1 && stockRows()[0]._id === originalId && qtyOf(stockRows()[0], borak.code) === 450, 'Kobo record 600 -> 450 in place');
+  assert(stockRows().length === 1 && qtyOf(stockRows()[0], borak.code) === 450, 'Kobo record 600 -> 450 with one remaining row');
   await win.sync();
   assert(win.stock(borak) === '450' && win.ledger.filter((t) => t.txType === 'STOCK_BASELINE').length === 1, 'Windows sees 450 after sync, no second record');
 
   // --- 5. Edit offline, synchronize later
+  const idBeforeOfflineEdit = win.ledger.find((t) => t.txType === 'STOCK_BASELINE' && t.lines[0].materialCode === borak.code)!.koboSubmissionId;
   win.setStock(borak, '300', '2026-10-24T08:00:00.000Z');
   kobo.offline = true; await win.sync(false);
   const out = await syncTransaction(win.ledger.find((t) => t.txType === 'STOCK_BASELINE')!, config, koboClient, win.ledger);
-  assert(out.kind === 'unknown' && out.tx.koboSubmissionId === originalId, 'offline update keeps the Kobo id and stays queued');
+  assert(out.kind === 'unknown' && out.tx.koboSubmissionId === idBeforeOfflineEdit, 'offline update keeps the latest Kobo id and stays queued');
   win.ledger = win.ledger.map((t) => (t.clientTxUuid === out.tx.clientTxUuid ? out.tx : t));
   kobo.offline = false; await win.sync();
-  assert(stockRows().length === 1 && stockRows()[0]._id === originalId && qtyOf(stockRows()[0], borak.code) === 300, 'offline edit reached the ORIGINAL record');
+  assert(stockRows().length === 1 && qtyOf(stockRows()[0], borak.code) === 300, 'offline edit reached Kobo with one remaining row');
 
   // --- 6. Same record edited in both apps while apart: newest count wins, still one submission
   win.setStock(borak, '280', '2026-10-25T08:00:00.000Z');       // older edit, made on Windows
@@ -202,7 +208,7 @@ export async function runKoboSyncTests() {
   win.setStock(borak, '261', '2026-10-27T08:00:00.000Z');
   await win.sync();
   assert(qtyOf(treatedRow(), treated.code) === 200 && stockRows().length === 2, 'other material unchanged');
-  assert(qtyOf(stockRows().find((r) => r._id === originalId)!, borak.code) === 261, 'edited material changed');
+  assert(qtyOf(stockRows().find((r) => r.material_lines[0]['material_lines/material_code'] === borak.code)!, borak.code) === 261, 'edited material changed');
 
   // --- 8. Response lost after Kobo accepted a NEW record: the retry finds it, never posts again
   const dev3 = new Device('windows-2');
@@ -228,32 +234,33 @@ export async function runKoboSyncTests() {
   assert(pulled.success && pulled.records!.length === 3, `all pages read (${pulled.records?.length})`);
   kobo.pageSize = 1000;
 
-  // --- 11. PATCH 404 while UUID lookup still finds the same submission: keep queued, never create a duplicate
+  // --- 11. A replacement POST whose response is lost is found by UUID and cleaned up without reposting
   win.setStock(borak, '263', '2026-10-28T08:30:00.000Z');
-  const pending404 = win.ledger.find((t) => t.txType === 'STOCK_BASELINE' && t.lines[0].materialCode === borak.code)!;
-  kobo.patchNotFoundOnce = true;
-  const postsBefore404 = kobo.posts;
-  const patch404 = await syncTransaction(pending404, config, koboClient, win.ledger);
-  assert(patch404.kind === 'failed' && patch404.tx.koboSubmissionId === originalId, 'PATCH 404 with matching UUID stays queued with its existing Kobo ID');
-  assert(kobo.posts === postsBefore404, 'PATCH 404 with matching UUID never creates a duplicate submission');
-  const retry404 = await syncTransaction(patch404.tx, config, koboClient, win.ledger);
-  assert(retry404.kind === 'updated' && retry404.tx.syncStatus === 'SYNCED', 'the same record can be updated on a later successful retry');
-  assert(kobo.posts === postsBefore404, 'successful retry updates without creating a submission');
+  kobo.loseNextPostResponse = true;
+  const postsBeforeReplacementRetry = kobo.posts;
+  const rowsBeforeReplacementRetry = stockRows().length;
+  await win.sync();
+  assert(win.ledger.find((t) => t.txType === 'STOCK_BASELINE' && t.lines[0].materialCode === borak.code)!.syncStatus === 'OUTCOME_UNKNOWN', 'lost replacement response remains queued');
+  assert(stockRows().length === rowsBeforeReplacementRetry + 1 && kobo.posts === postsBeforeReplacementRetry + 1, 'accepted replacement may coexist until retry confirms it');
+  await win.sync();
+  assert(stockRows().length === rowsBeforeReplacementRetry && qtyOf(stockRows().find((row) => row.material_lines[0]['material_lines/material_code'] === borak.code)!, borak.code) === 263, 'retry confirms replacement and removes old submission');
+  assert(kobo.posts === postsBeforeReplacementRetry + 1 && kobo.patches === 0, 'replacement retry does not repost or use PATCH');
 
-  // --- 12. The saved _id is not in this form (wrong form first, or deleted): found by client_tx_uuid or re-sent ONCE, never stuck
-  const stray = stockRows().findIndex((r) => r._id === originalId);
+  // --- 12. The saved _id is absent: the record is sent once and re-linked
+  const currentBorakId = win.ledger.find((t) => t.txType === 'STOCK_BASELINE' && t.lines[0].materialCode === borak.code)!.koboSubmissionId!;
+  const stray = stockRows().findIndex((r) => r._id === currentBorakId);
   const [removed] = stockRows().splice(stray, 1);
   win.setStock(borak, '262', '2026-10-28T09:00:00.000Z');
   await win.sync();
   const rec2 = win.ledger.find((t) => t.txType === 'STOCK_BASELINE' && t.lines[0].materialCode === borak.code)!;
-  assert(rec2.syncStatus === 'SYNCED' && rec2.koboSubmissionId !== originalId && !!rec2.koboSubmissionId, 'missing submission: record re-sent once and re-linked');
+  assert(rec2.syncStatus === 'SYNCED' && rec2.koboSubmissionId !== currentBorakId && !!rec2.koboSubmissionId, 'missing submission: record re-sent once and re-linked');
   assert(stockRows().filter((r) => r.material_lines[0]['material_lines/material_code'] === borak.code).length === 1, 'still one row for the material');
   const posts11 = kobo.posts;
   await win.sync(); await win.sync();
   assert(kobo.posts === posts11, 'no further posts');
   void removed;
 
-  console.log('✓ Kobo sync tests passed (exact quantity, update in place, no duplicates, offline, conflicts, retries).');
+  console.log('✓ Kobo sync tests passed (exact quantity, replacement, cleanup retries, no duplicates, offline, conflicts).');
 }
 
 runKoboSyncTests().catch((e) => { console.error(e); process.exit(1); });

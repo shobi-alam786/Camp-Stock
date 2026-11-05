@@ -1,6 +1,6 @@
 /**
  * Camp Stock Inventory Management System
- * Sends ONE local record to Kobo: creates it the first time, updates the same submission afterwards.
+ * Sends ONE local record to Kobo: creates it first, then replaces its remote submission on edits.
  * The Kobo calls are passed in (KoboOps), so the rules can be tested without a network.
  */
 
@@ -12,7 +12,7 @@ export interface KoboOps {
   submitTransaction(tx: InventoryTransaction, config: KoboServerConfig, ledger?: InventoryTransaction[]):
     Promise<{ success: boolean; submissionId?: number; instanceId?: string; error?: string; outcomeUnknown?: boolean; warning?: string }>;
   updateTransaction(tx: InventoryTransaction, config: KoboServerConfig):
-    Promise<{ success: boolean; remote?: InventoryTransaction; error?: string; outcomeUnknown?: boolean; warning?: string; notFound?: boolean }>;
+    Promise<{ success: boolean; remote?: InventoryTransaction; submissionId?: number; instanceId?: string; error?: string; outcomeUnknown?: boolean; warning?: string; notFound?: boolean }>;
   findSubmissionByClientUuid(tx: InventoryTransaction, config: KoboServerConfig):
     Promise<{ found: boolean; submissionId?: number; instanceId?: string; remote?: InventoryTransaction; error?: string }>;
 }
@@ -71,9 +71,14 @@ export async function syncTransaction(
       note = `Old Kobo submission ${oldId} is not in this form, so the record was sent again as a new submission here.`;
       cur = { ...cur, koboSubmissionId: undefined, koboInstanceId: `uuid:${cur.clientTxUuid}` };
     } else {
-      if (!r.success) return failure(cur, r.error || 'Update failed.', !!r.outcomeUnknown);
+      const updatedIdentity = {
+        ...cur,
+        koboSubmissionId: r.submissionId ?? cur.koboSubmissionId,
+        koboInstanceId: r.instanceId || cur.koboInstanceId,
+      };
+      if (!r.success) return failure(updatedIdentity, r.error || 'Update failed.', !!r.outcomeUnknown);
       if (r.remote) return { kind: 'remote_newer', tx: applyRemote(cur, r.remote) };
-      return { kind: 'updated', warning: r.warning, tx: { ...cur, syncStatus: 'SYNCED', syncErrorMessage: undefined, lastSyncAttempt: now } };
+      return { kind: 'updated', warning: r.warning, tx: { ...updatedIdentity, syncStatus: 'SYNCED', syncErrorMessage: undefined, lastSyncAttempt: now } };
     }
   }
 

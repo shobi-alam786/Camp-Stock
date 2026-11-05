@@ -3,10 +3,10 @@
  * Shared synchronization rules (pure functions). The Android app implements the SAME rules in
  * android-camp-stock/.../sync/SyncRules.kt - keep the two files in step.
  *
- * One record = one Kobo submission:
+ * One local record = one active Kobo submission:
  *   - a local record without a Kobo _id has never been confirmed on Kobo  -> CREATE (POST)
- *   - a local record with a Kobo _id                                      -> UPDATE (PATCH that same submission)
- * The local record keeps the Kobo _id (koboSubmissionId) and _uuid (koboInstanceId) for its whole life.
+ *   - a local record with a Kobo _id                                      -> UPDATE (verified replacement POST, then delete old row)
+ * The Kobo submission ID can change after a replacement; the client transaction UUID remains stable.
  */
 
 import { DecimalSafe, InventoryTransaction, instantOf } from '../types/inventory.ts';
@@ -92,7 +92,7 @@ export function mergeRemote(local: InventoryTransaction[], remote: InventoryTran
     if (!l.koboSubmissionId) {
       // pending CREATE that already exists on Kobo
       replaced.set(l.clientTxUuid, same ? { ...l, syncStatus: 'SYNCED', koboSubmissionId: r.koboSubmissionId, koboInstanceId: r.koboInstanceId || l.koboInstanceId, syncErrorMessage: undefined }
-                                         : { ...l, koboSubmissionId: r.koboSubmissionId, koboInstanceId: r.koboInstanceId || l.koboInstanceId });
+        : { ...l, koboSubmissionId: r.koboSubmissionId, koboInstanceId: r.koboInstanceId || l.koboInstanceId });
       linked++;
       continue;
     }

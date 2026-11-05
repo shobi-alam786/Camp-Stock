@@ -33,10 +33,10 @@ export function findBaselineRecord(code: string, locationId: string, transaction
 
 /**
  * Sets the current stock of one material to EXACTLY the quantity typed (a stock-count snapshot, SNAP- reference).
- * One material at one location = one record = one Kobo submission:
+ * One material at one location = one local baseline and one active Kobo submission:
  *  - first time: a new single-material record;
- *  - later edits: the SAME record (same clientTxUuid, same Kobo _id/_uuid) with the new quantity, marked PENDING,
- *    so the next sync updates the existing Kobo submission instead of creating another one.
+ *  - later edits: the same local record (same clientTxUuid) with a new quantity, marked PENDING;
+ *    Kobo sync replaces the remote row and removes the old submission after verification.
  * Returns null when the stock already equals the quantity.
  */
 export function buildSnapshotBaseline(args: {

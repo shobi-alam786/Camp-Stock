@@ -143,23 +143,6 @@ export function buildCatalogueXml(
   );
 }
 
-/**
- * Fields sent when an EXISTING single-material Kobo submission is updated (bulk PATCH by _id).
- * Identity fields (client_tx_uuid, tx_type, material_code, locations) are never changed.
- */
-export function buildUpdateData(tx: InventoryTransaction): Record<string, string> {
-  const l = tx.lines[0];
-  const data: Record<string, string> = {
-    tx_date_time: tx.txDateTime, staff_id: tx.staffId, ref_no: tx.referenceNumber, notes: tx.notes || '',
-    'material_lines/material_name': l.materialName || '',
-    'material_lines/quantity': l.quantity,
-    'material_lines/unit': l.unit,
-    'material_lines/line_notes': l.notes || '',
-  };
-  if (formGroupFor(tx.txType) === 'RECORDS') data['material_lines/damaged_quantity'] = l.damagedQuantity || '0';
-  return data;
-}
-
 export function buildMultipartSubmission(xmlContent: string, boundary: string): string {
   return [
     `--${boundary}`,

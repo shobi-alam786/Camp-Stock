@@ -3,9 +3,10 @@
  * Unified Kobo Client for Windows Desktop & Web
  */
 
-import { buildFormXml, buildMultipartSubmission, buildCatalogueXml, buildUpdateData, parseKoboSubmissionJson, formGroupFor } from '../utils/koboXml.ts';
+import { buildFormXml, buildMultipartSubmission, buildCatalogueXml, parseKoboSubmissionJson, formGroupFor } from '../utils/koboXml.ts';
 import { DecimalSafe, InventoryTransaction, MaterialCatalogueItem, instantOf } from '../types/inventory.ts';
 import { sameContent } from '../utils/syncRules.ts';
+import { newId } from '../utils/form.ts';
 
 // Asset UIDs are identifiers, not secrets (the API token is the secret).
 export const DEFAULT_UID_CATALOGUE = 'axcwQUvw74V3PnskvpjWZ9';
@@ -297,39 +298,58 @@ export class KoboClient {
   /** Finds the Kobo submission of a record by its client_tx_uuid. Gives back its _id, _uuid and content. */
   async findSubmissionByClientUuid(tx: InventoryTransaction, config: KoboServerConfig):
     Promise<{ found: boolean; submissionId?: number; instanceId?: string; remote?: InventoryTransaction; error?: string }> {
+    const result = await this.findSubmissionsByClientUuid(tx, config);
+    if (result.error) return { found: false, error: result.error };
+    const match = result.submissions.sort((a, b) => b.submissionId - a.submissionId)[0];
+    if (!match) return { found: false };
+    return { found: true, submissionId: match.submissionId, instanceId: match.instanceId, remote: match.remote };
+  }
+
+  private async findSubmissionsByClientUuid(tx: InventoryTransaction, config: KoboServerConfig): Promise<{
+    submissions: Array<{ submissionId: number; instanceId?: string; remote: InventoryTransaction }>;
+    error?: string;
+  }> {
     const tauriFetch = this.getTauriFetch();
-    if (!tauriFetch) return { found: false, error: 'Remote verification requires the installed Windows app.' };
-    if (!config.token || !config.formUid) return { found: false, error: 'Kobo configuration is incomplete.' };
+    if (!tauriFetch) return { submissions: [], error: 'Remote verification requires the installed Windows app.' };
+    if (!config.token) return { submissions: [], error: 'Kobo configuration is incomplete.' };
     try {
       const query = encodeURIComponent(JSON.stringify({ client_tx_uuid: tx.clientTxUuid }));
-      const url = `${config.serverUrl.replace(/\/$/, '')}/api/v2/assets/${encodeURIComponent(uidFor(tx.txType, config))}/data/?format=json&limit=10&query=${query}`;
+      const uid = uidFor(tx.txType, config);
+      if (!uid) return { submissions: [], error: 'A Kobo form UID is missing in Settings.' };
+      const url = `${base(config)}/api/v2/assets/${encodeURIComponent(uid)}/data/?format=json&limit=1000&query=${query}`;
       const res = await tauriFetch(url, { method: 'GET', headers: { Authorization: `Token ${config.token}` } });
-      if (res.status !== 200) return { found: false, error: `Remote duplicate check failed (HTTP ${res.status}); do not retry yet.` };
+      if (res.status !== 200) return { submissions: [], error: `Remote duplicate check failed (HTTP ${res.status}); do not retry yet.` };
       const payload = await res.json();
       const rows = Array.isArray(payload?.results) ? payload.results : Array.isArray(payload) ? payload : [];
-      const match = rows.find((r: Record<string, any>) => r.client_tx_uuid === tx.clientTxUuid);
-      if (!match) return { found: false };
-      const remote = parseKoboSubmissionJson(match, 'TX');
-      return { found: true, submissionId: Number(match._id) || undefined, instanceId: remote.koboInstanceId, remote };
+      const submissions = rows
+        .filter((row: Record<string, any>) => row.client_tx_uuid === tx.clientTxUuid && Number(row._id) > 0)
+        .map((row: Record<string, any>) => {
+          const remote = parseKoboSubmissionJson(row, 'TX');
+          return { submissionId: Number(row._id), instanceId: remote.koboInstanceId, remote };
+        });
+      return { submissions };
     } catch (e: any) {
-      return { found: false, error: `Remote duplicate check error: ${e?.message || 'Network exception'}` };
+      return { submissions: [], error: `Remote duplicate check error: ${e?.message || 'Network exception'}` };
     }
   }
 
-  /** Reads ONE submission by its Kobo _id. 404 = it no longer exists on Kobo. */
-  private async fetchSubmissionById(uid: string, id: number, config: KoboServerConfig, tauriFetch: (input: any, init?: any) => Promise<any>):
-    Promise<{ status: number; row?: Record<string, any> }> {
-    const res = await tauriFetch(`${base(config)}/api/v2/assets/${encodeURIComponent(uid)}/data/${id}/?format=json`, { method: 'GET', headers: { Authorization: `Token ${config.token}` } });
-    if (res.status !== 200) return { status: res.status };
-    return { status: 200, row: await res.json() };
+  private async deleteSubmission(uid: string, id: number, config: KoboServerConfig, tauriFetch: (input: any, init?: any) => Promise<any>): Promise<string | null> {
+    try {
+      const res = await tauriFetch(`${base(config)}/api/v2/assets/${encodeURIComponent(uid)}/data/${id}/`, {
+        method: 'DELETE', headers: { Authorization: `Token ${config.token}` },
+      });
+      if ((res.status >= 200 && res.status < 300) || res.status === 404) return null;
+      let detail = '';
+      try { detail = (await res.text()).slice(0, 160); } catch { }
+      return `Kobo could not remove old submission ${id} (HTTP ${res.status}) ${detail}`.trim();
+    } catch (e: any) {
+      return `Could not confirm removal of old Kobo submission ${id}: ${e?.message || 'Network exception'}`;
+    }
   }
 
-  /**
-   * Updates the EXISTING Kobo submission of a single-material record (found by its Kobo _id); never posts a new one.
-   * If Kobo holds a NEWER version of the record (edited on another device), nothing is sent and that version is returned as `remote`.
-   */
+  /** Replaces an existing single-material submission by posting the verified replacement before deleting old rows. */
   async updateTransaction(tx: InventoryTransaction, config: KoboServerConfig):
-    Promise<{ success: boolean; remote?: InventoryTransaction; error?: string; outcomeUnknown?: boolean; warning?: string; notFound?: boolean }> {
+    Promise<{ success: boolean; remote?: InventoryTransaction; submissionId?: number; instanceId?: string; error?: string; outcomeUnknown?: boolean; warning?: string; notFound?: boolean }> {
     const tauriFetch = this.getTauriFetch();
     if (!tauriFetch) return { success: false, error: 'Not running inside the Windows app: the update was NOT sent to Kobo.' };
     if (!config.token) return { success: false, error: 'Kobo token is missing in Settings.' };
@@ -338,39 +358,56 @@ export class KoboClient {
     try {
       const uid = uidFor(tx.txType, config);
       if (!uid) return { success: false, error: 'A Kobo form UID is missing in Settings.' };
-      const before = await this.fetchSubmissionById(uid, tx.koboSubmissionId, config, tauriFetch);
-      if (before.status === 404) return { success: false, notFound: true, error: `Kobo submission ${tx.koboSubmissionId} is not in this form.` };
-      if (before.status === 401 || before.status === 403) return { success: false, error: `Token refused by Kobo (HTTP ${before.status}). Check API token.` };
-      if (before.status !== 200 || !before.row) return { success: false, error: `Cannot read Kobo submission ${tx.koboSubmissionId} (HTTP ${before.status}).` };
-      const current = parseKoboSubmissionJson(before.row, 'TX');
-      if (current.clientTxUuid !== tx.clientTxUuid) {
-        return { success: false, error: `Kobo submission ${tx.koboSubmissionId} belongs to a different record. Nothing was sent.` };
-      }
-      if (!sameContent(tx, current) && instantOf(current.txDateTime) > instantOf(tx.txDateTime)) return { success: true, remote: current };
-      if (sameContent(tx, current)) return { success: true };
+      const before = await this.findSubmissionsByClientUuid(tx, config);
+      if (before.error) return { success: false, error: before.error, outcomeUnknown: true };
+      if (before.submissions.length === 0) return { success: false, notFound: true, error: `Kobo submission ${tx.koboSubmissionId} is not in this form.` };
 
-      const res = await tauriFetch(`${base(config)}/api/v2/assets/${encodeURIComponent(uid)}/data/bulk/`, {
-        method: 'PATCH',
-        headers: { Authorization: `Token ${config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payload: { submission_ids: [tx.koboSubmissionId], data: buildUpdateData(tx) } }),
-      });
-      if (res.status < 200 || res.status >= 300) {
-        let detail = ''; try { detail = (await res.text()).slice(0, 200); } catch { }
-        return {
-          success: false,
-          notFound: res.status === 404,
-          error: `Kobo rejected the update (HTTP ${res.status}) ${detail}`.trim(),
-        };
+      const orderedBefore = [...before.submissions].sort((a, b) => b.submissionId - a.submissionId);
+      const newestBefore = orderedBefore[0];
+      if (!sameContent(tx, newestBefore.remote) && instantOf(newestBefore.remote.txDateTime) > instantOf(tx.txDateTime)) {
+        return { success: true, remote: newestBefore.remote };
       }
-      try { const body = await res.json(); if (Number(body?.failures) > 0) return { success: false, error: `Kobo did not update the submission: ${JSON.stringify(body?.results ?? body).slice(0, 200)}` }; } catch { /* body is optional */ }
 
-      // Read it back: the exact quantity must be what Kobo now holds.
-      const after = await this.fetchSubmissionById(uid, tx.koboSubmissionId, config, tauriFetch);
-      const mismatch = after.row ? this.quantityMismatch(tx, parseKoboSubmissionJson(after.row, 'TX')) : '';
-      return { success: true, warning: mismatch || undefined };
+      const alreadyReplaced = orderedBefore.find((submission) => sameContent(tx, submission.remote));
+      if (alreadyReplaced) {
+        for (const old of before.submissions) {
+          if (old.submissionId === alreadyReplaced.submissionId) continue;
+          const error = await this.deleteSubmission(uid, old.submissionId, config, tauriFetch);
+          if (error) return { success: false, submissionId: alreadyReplaced.submissionId, instanceId: alreadyReplaced.instanceId, error };
+        }
+        return { success: true, submissionId: alreadyReplaced.submissionId, instanceId: alreadyReplaced.instanceId };
+      }
+
+      const { form, error: formError } = await this.resolveForm(uid, config, tauriFetch);
+      if (!form) return { success: false, error: `${formError} Replacement was not submitted.` };
+      const replacementInstanceId = `uuid:${newId()}`;
+      const replacement = { ...tx, koboInstanceId: replacementInstanceId };
+      const submissionUrl = `${config.serverUrl.replace(/^https:\/\/kf\./, 'https://kc.').replace(/\/$/, '')}/submission`;
+      const response = await this.postXml(buildFormXml(replacement, form.idString, form.uuid), submissionUrl, config, tauriFetch);
+      if (response.status !== 201 && response.status !== 202) {
+        let detail = '';
+        try { detail = (await response.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180); } catch { }
+        return { success: false, error: `Kobo rejected replacement (HTTP ${response.status}) ${detail}`.trim() };
+      }
+
+      const after = await this.findSubmissionsByClientUuid(tx, config);
+      if (after.error) return { success: false, error: `Replacement was submitted, but Kobo could not verify it: ${after.error}`, outcomeUnknown: true };
+      const confirmed = after.submissions
+        .filter((submission) => sameContent(tx, submission.remote))
+        .sort((a, b) => b.submissionId - a.submissionId)[0];
+      if (!confirmed) return { success: false, error: 'Replacement was submitted, but its contents were not found on Kobo. The old submission was kept.', outcomeUnknown: true };
+
+      const mismatch = this.quantityMismatch(tx, confirmed.remote);
+      if (mismatch) return { success: false, submissionId: confirmed.submissionId, instanceId: confirmed.instanceId, error: `Replacement verification failed: ${mismatch}. The old submission was kept.` };
+
+      for (const old of after.submissions) {
+        if (old.submissionId === confirmed.submissionId) continue;
+        const deleteError = await this.deleteSubmission(uid, old.submissionId, config, tauriFetch);
+        if (deleteError) return { success: false, submissionId: confirmed.submissionId, instanceId: confirmed.instanceId, error: `${deleteError}. The replacement is saved; retry sync to finish cleanup.` };
+      }
+      return { success: true, submissionId: confirmed.submissionId, instanceId: confirmed.instanceId };
     } catch (e: any) {
-      // The PATCH is idempotent, so a retry after an unknown outcome is safe.
-      return { success: false, outcomeUnknown: true, error: `Update outcome unknown; it is safe to retry. ${e?.message || 'Network exception'}` };
+      return { success: false, outcomeUnknown: true, error: `Replacement outcome unknown; retry will verify by client record ID before sending again. ${e?.message || 'Network exception'}` };
     }
   }
 

@@ -1,6 +1,6 @@
 [package]
 name = "camp-stock-inventory"
-version = "1.0.1"
+version = "1.0.2"
 description = "Camp Stock Inventory Management System for Windows"
 authors = ["Humanitarian Camp Operations"]
 edition = "2021"
