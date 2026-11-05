@@ -352,7 +352,7 @@ export class KoboClient {
       const res = await tauriFetch(`${base(config)}/api/v2/assets/${encodeURIComponent(uid)}/data/bulk/`, {
         method: 'PATCH',
         headers: { Authorization: `Token ${config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payload: { submission_ids: [String(tx.koboSubmissionId)], data: buildUpdateData(tx) } }),
+        body: JSON.stringify({ payload: { submission_ids: [tx.koboSubmissionId], data: buildUpdateData(tx) } }),
       });
       if (res.status < 200 || res.status >= 300) {
         let detail = ''; try { detail = (await res.text()).slice(0, 200); } catch { }

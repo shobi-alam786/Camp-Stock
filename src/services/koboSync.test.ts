@@ -21,6 +21,7 @@ class FakeKobo {
   forms: Record<string, Row[]> = { FORM_RECORDS: [], FORM_STOCK: [], FORM_HAND: [] };
   nextId = 1000;
   posts = 0; patches = 0;
+  lastPatchBody: any;
   offline = false;
   loseNextPostResponse = false;
   patchNotFoundOnce = false;
@@ -45,7 +46,8 @@ class FakeKobo {
         this.patchNotFoundOnce = false;
         return this.json(404, { detail: 'Not found.' });
       }
-      return this.bulk(uid, JSON.parse(init.body));
+      this.lastPatchBody = JSON.parse(init.body);
+      return this.bulk(uid, this.lastPatchBody);
     }
     if (rest === 'data/' && method === 'GET') return this.list(uid, u);
     const one_ = /^data\/(\d+)\/$/.exec(rest);
@@ -79,8 +81,10 @@ class FakeKobo {
       const r = this.forms[uid].find((x) => x._id === Number(id));
       if (!r) continue;
       for (const [k, v] of Object.entries<string>(data)) {
-        if (REPEAT_KEYS.includes(k)) r.material_lines.forEach((l: Row) => { l[`material_lines/${k}`] = (k === 'quantity' || k === 'damaged_quantity') ? parseFloat(v) : v; });
-        else r[k] = v;
+        const [group, field] = k.split('/');
+        if (group === 'material_lines' && REPEAT_KEYS.includes(field)) {
+          r.material_lines.forEach((l: Row) => { l[`material_lines/${field}`] = (field === 'quantity' || field === 'damaged_quantity') ? parseFloat(v) : v; });
+        } else r[k] = v;
       }
       n++;
     }
@@ -160,6 +164,8 @@ export async function runKoboSyncTests() {
   await win.sync();
   assert(stockRows().length === 1 && stockRows()[0]._id === originalId && qtyOf(stockRows()[0], borak.code) === 600, 'Kobo record 585 -> 600 in place');
   assert(kobo.posts === 1 && kobo.patches === 1, `one POST, one PATCH (posts ${kobo.posts}, patches ${kobo.patches})`);
+  assert(typeof kobo.lastPatchBody.payload.submission_ids[0] === 'number', 'Kobo update uses numeric submission IDs');
+  assert(kobo.lastPatchBody.payload.data['material_lines/quantity'] === '600', 'Kobo update uses repeat-group-qualified material fields');
 
   // --- 4. Second device (Android rules) receives the change, edits 600 -> 450: original record updates, Windows receives it
   const and = new Device('android');

@@ -138,8 +138,8 @@ export function buildCatalogueXml(
   return wrapForm(
     formId, formUuid, `uuid:${recordUuid}`,
     tag('client_tx_uuid', recordUuid) + tag('material_code', item.code) + tag('material_name', item.name) + tag('unit', item.unit) +
-      tag('unit_confirmed', item.isUnitConfirmed ? 'yes' : 'no') + tag('status', item.isActive === false ? 'inactive' : 'active') +
-      tag('notes', item.notes) + tag('updated_by', updatedBy) + tag('location_id', locationId) + tag('current_stock', currentStock)
+    tag('unit_confirmed', item.isUnitConfirmed ? 'yes' : 'no') + tag('status', item.isActive === false ? 'inactive' : 'active') +
+    tag('notes', item.notes) + tag('updated_by', updatedBy) + tag('location_id', locationId) + tag('current_stock', currentStock)
   );
 }
 
@@ -151,9 +151,12 @@ export function buildUpdateData(tx: InventoryTransaction): Record<string, string
   const l = tx.lines[0];
   const data: Record<string, string> = {
     tx_date_time: tx.txDateTime, staff_id: tx.staffId, ref_no: tx.referenceNumber, notes: tx.notes || '',
-    material_name: l.materialName || '', quantity: l.quantity, unit: l.unit, line_notes: l.notes || '',
+    'material_lines/material_name': l.materialName || '',
+    'material_lines/quantity': l.quantity,
+    'material_lines/unit': l.unit,
+    'material_lines/line_notes': l.notes || '',
   };
-  if (formGroupFor(tx.txType) === 'RECORDS') data.damaged_quantity = l.damagedQuantity || '0';
+  if (formGroupFor(tx.txType) === 'RECORDS') data['material_lines/damaged_quantity'] = l.damagedQuantity || '0';
   return data;
 }
 
@@ -196,23 +199,23 @@ export function parseKoboSubmissionJson(
   const g = (item: any, name: string) => item[`dispatch_details/${name}`] ?? item[name] ?? '';
   const lines: TransactionLine[] = Array.isArray(rawLines) && isDispatchForm
     ? rawLines.map((item: any, idx: number) => {
-        drr = drr || g(item, 'drr_code');
-        mrf = mrf || g(item, 'mrf_number');
-        const isReturn = txTypeValue === 'RETURN';
-        const matName: string = String(g(item, 'materials'));
-        const known = catalogue.find((m) => m.name.trim().toLowerCase() === matName.trim().toLowerCase());
-        return {
-          lineId: `${clientTxUuid}-line-${idx + 1}`,
-          materialCode: known?.code || matName,
-          materialName: matName,
-          quantity: String(g(item, isReturn ? 'returned_qty' : 'dispatch_qty') || '0'),
-          damagedQuantity: String(g(item, 'damaged_qty') || '0'),
-          unit: known?.unit || '',
-          notes: '',
-        };
-      })
+      drr = drr || g(item, 'drr_code');
+      mrf = mrf || g(item, 'mrf_number');
+      const isReturn = txTypeValue === 'RETURN';
+      const matName: string = String(g(item, 'materials'));
+      const known = catalogue.find((m) => m.name.trim().toLowerCase() === matName.trim().toLowerCase());
+      return {
+        lineId: `${clientTxUuid}-line-${idx + 1}`,
+        materialCode: known?.code || matName,
+        materialName: matName,
+        quantity: String(g(item, isReturn ? 'returned_qty' : 'dispatch_qty') || '0'),
+        damagedQuantity: String(g(item, 'damaged_qty') || '0'),
+        unit: known?.unit || '',
+        notes: '',
+      };
+    })
     : Array.isArray(rawLines)
-    ? rawLines.map((item: any, idx: number) => {
+      ? rawLines.map((item: any, idx: number) => {
         // Handle both flat slashed keys and unslashed keys in Kobo repeat groups
         const materialCode = item['material_lines/material_code'] || item['material_code'] || '';
         const quantity = String(item['material_lines/quantity'] || item['quantity'] || '0');
@@ -230,7 +233,7 @@ export function parseKoboSubmissionJson(
           notes,
         };
       })
-    : [];
+      : [];
 
   return {
     clientTxUuid,
