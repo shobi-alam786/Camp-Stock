@@ -126,7 +126,7 @@ export class KoboClient {
         return { success: true, submissionId: found.submissionId, instanceId: found.instanceId, warning: mismatch || undefined };
       }
       let detail = '';
-      try { detail = (await res.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200); } catch {}
+      try { detail = (await res.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200); } catch { }
       return { success: false, error: `Kobo rejected submission (HTTP ${res.status}) ${detail}`.trim() };
     } catch (e: any) {
       // A timeout may occur after Kobo accepted the submission. Never treat it as safe to blindly retry.
@@ -239,11 +239,15 @@ export class KoboClient {
           const res = await tauriFetch(`${base(config)}/api/v2/assets/${encodeURIComponent(uid)}/data/bulk/`, {
             method: 'PATCH',
             headers: { Authorization: `Token ${config.token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ payload: { submission_ids: [String(r._id)], data: {
-              material_name: m.name, unit: m.unit, unit_confirmed: m.isUnitConfirmed ? 'yes' : 'no',
-              status: m.isActive === false ? 'inactive' : 'active', notes: m.notes || '', updated_by: 'windows-app',
-              location_id: locationId, current_stock: stock,
-            } } }),
+            body: JSON.stringify({
+              payload: {
+                submission_ids: [String(r._id)], data: {
+                  material_name: m.name, unit: m.unit, unit_confirmed: m.isUnitConfirmed ? 'yes' : 'no',
+                  status: m.isActive === false ? 'inactive' : 'active', notes: m.notes || '', updated_by: 'windows-app',
+                  location_id: locationId, current_stock: stock,
+                }
+              }
+            }),
           });
           if (res.status >= 200 && res.status < 300) sent++;
           else return { success: false, sent, same, error: `Catalogue update stopped after ${sent}: HTTP ${res.status}` };
@@ -351,8 +355,12 @@ export class KoboClient {
         body: JSON.stringify({ payload: { submission_ids: [String(tx.koboSubmissionId)], data: buildUpdateData(tx) } }),
       });
       if (res.status < 200 || res.status >= 300) {
-        let detail = ''; try { detail = (await res.text()).slice(0, 200); } catch {}
-        return { success: false, error: `Kobo rejected the update (HTTP ${res.status}) ${detail}`.trim() };
+        let detail = ''; try { detail = (await res.text()).slice(0, 200); } catch { }
+        return {
+          success: false,
+          notFound: res.status === 404,
+          error: `Kobo rejected the update (HTTP ${res.status}) ${detail}`.trim(),
+        };
       }
       try { const body = await res.json(); if (Number(body?.failures) > 0) return { success: false, error: `Kobo did not update the submission: ${JSON.stringify(body?.results ?? body).slice(0, 200)}` }; } catch { /* body is optional */ }
 

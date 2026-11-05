@@ -55,6 +55,12 @@ export async function syncTransaction(
       const found = await kobo.findSubmissionByClientUuid(cur, config);
       if (found.error) return failure(cur, found.error, true);
       const oldId = cur.koboSubmissionId;
+      if (found.found && !found.submissionId) {
+        return failure(cur, 'Kobo found this record by client ID but returned no submission ID. It was not re-sent to avoid a duplicate.', false);
+      }
+      if (found.found && found.submissionId === oldId) {
+        return failure(cur, `Kobo still finds submission ${oldId} by client ID but rejected its update. The record was not re-sent to avoid a duplicate. Check the Kobo form and update permissions.`, false);
+      }
       if (found.found && found.submissionId && found.submissionId !== oldId) {
         const again = await kobo.updateTransaction({ ...cur, koboSubmissionId: found.submissionId, koboInstanceId: found.instanceId || cur.koboInstanceId }, config);
         cur = { ...cur, koboSubmissionId: found.submissionId, koboInstanceId: found.instanceId || cur.koboInstanceId };
@@ -65,9 +71,9 @@ export async function syncTransaction(
       note = `Old Kobo submission ${oldId} is not in this form, so the record was sent again as a new submission here.`;
       cur = { ...cur, koboSubmissionId: undefined, koboInstanceId: `uuid:${cur.clientTxUuid}` };
     } else {
-    if (!r.success) return failure(cur, r.error || 'Update failed.', !!r.outcomeUnknown);
-    if (r.remote) return { kind: 'remote_newer', tx: applyRemote(cur, r.remote) };
-    return { kind: 'updated', warning: r.warning, tx: { ...cur, syncStatus: 'SYNCED', syncErrorMessage: undefined, lastSyncAttempt: now } };
+      if (!r.success) return failure(cur, r.error || 'Update failed.', !!r.outcomeUnknown);
+      if (r.remote) return { kind: 'remote_newer', tx: applyRemote(cur, r.remote) };
+      return { kind: 'updated', warning: r.warning, tx: { ...cur, syncStatus: 'SYNCED', syncErrorMessage: undefined, lastSyncAttempt: now } };
     }
   }
 

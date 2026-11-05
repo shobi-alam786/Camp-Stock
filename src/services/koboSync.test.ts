@@ -23,6 +23,7 @@ class FakeKobo {
   posts = 0; patches = 0;
   offline = false;
   loseNextPostResponse = false;
+  patchNotFoundOnce = false;
   pageSize = 1000;
 
   rowsFor(uid: string) { return this.forms[uid]; }
@@ -39,7 +40,13 @@ class FakeKobo {
     const [, uid, rest] = m;
     if (!this.forms[uid]) return this.json(404, {});
     if (rest === '' && method === 'GET') return this.json(200, { has_deployment: true, deployment__active: true, deployment__uuid: `dep-${uid}`, content: { settings: { id_string: `id_${uid}` } } });
-    if (rest === 'data/bulk/' && method === 'PATCH') return this.bulk(uid, JSON.parse(init.body));
+    if (rest === 'data/bulk/' && method === 'PATCH') {
+      if (this.patchNotFoundOnce) {
+        this.patchNotFoundOnce = false;
+        return this.json(404, { detail: 'Not found.' });
+      }
+      return this.bulk(uid, JSON.parse(init.body));
+    }
     if (rest === 'data/' && method === 'GET') return this.list(uid, u);
     const one_ = /^data\/(\d+)\/$/.exec(rest);
     if (one_ && method === 'GET') { const r = this.forms[uid].find((x) => x._id === Number(one_[1])); return r ? this.json(200, r) : this.json(404, {}); }
@@ -103,7 +110,7 @@ const treated = { ...INITIAL_MATERIAL_CATALOGUE[44], unit: 'PCS', isUnitConfirme
 // ------------------------------------------------------------------ fake devices (Windows or Android behave the same by the shared rules)
 class Device {
   ledger: InventoryTransaction[] = [];
-  constructor(public name: string) {}
+  constructor(public name: string) { }
   setStock(material: typeof borak, qty: string, at: string) {
     const r = buildSnapshotBaseline({ material, locationId: LOC, desiredQty: qty, transactions: this.ledger, staff: this.name, now: new Date(at) });
     if (!r) return;
@@ -215,7 +222,19 @@ export async function runKoboSyncTests() {
   assert(pulled.success && pulled.records!.length === 3, `all pages read (${pulled.records?.length})`);
   kobo.pageSize = 1000;
 
-  // --- 11. The saved _id is not in this form (wrong form first, or deleted): found by client_tx_uuid or re-sent ONCE, never stuck
+  // --- 11. PATCH 404 while UUID lookup still finds the same submission: keep queued, never create a duplicate
+  win.setStock(borak, '263', '2026-10-28T08:30:00.000Z');
+  const pending404 = win.ledger.find((t) => t.txType === 'STOCK_BASELINE' && t.lines[0].materialCode === borak.code)!;
+  kobo.patchNotFoundOnce = true;
+  const postsBefore404 = kobo.posts;
+  const patch404 = await syncTransaction(pending404, config, koboClient, win.ledger);
+  assert(patch404.kind === 'failed' && patch404.tx.koboSubmissionId === originalId, 'PATCH 404 with matching UUID stays queued with its existing Kobo ID');
+  assert(kobo.posts === postsBefore404, 'PATCH 404 with matching UUID never creates a duplicate submission');
+  const retry404 = await syncTransaction(patch404.tx, config, koboClient, win.ledger);
+  assert(retry404.kind === 'updated' && retry404.tx.syncStatus === 'SYNCED', 'the same record can be updated on a later successful retry');
+  assert(kobo.posts === postsBefore404, 'successful retry updates without creating a submission');
+
+  // --- 12. The saved _id is not in this form (wrong form first, or deleted): found by client_tx_uuid or re-sent ONCE, never stuck
   const stray = stockRows().findIndex((r) => r._id === originalId);
   const [removed] = stockRows().splice(stray, 1);
   win.setStock(borak, '262', '2026-10-28T09:00:00.000Z');
