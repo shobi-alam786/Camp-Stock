@@ -54,7 +54,7 @@ export function IomStockRecords() {
   const visibleBalance = useMemo(() => {
     const query = balanceSearch.trim().toLowerCase();
     if (!query) return balanceRows;
-    return balanceRows.filter((row) => [row.code, row.category, row.subCategory, row.item, row.unit].some((value) => value.toLowerCase().includes(query)));
+    return balanceRows.filter((row) => [row.item, row.unit].some((value) => value.toLowerCase().includes(query)));
   }, [balanceRows, balanceSearch]);
 
   const unlock = async () => {
@@ -164,27 +164,26 @@ export function IomStockRecords() {
           <p className="text-xs text-slate-500">Source: {balanceSource} · BALANCE - CAMP · C013</p>
         </div>
         <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
-          Imported balance snapshot. Camp quantity is read from C013; TOTAL is shown separately. This does not change Kobo records or Camp Stock balances.
+          Imported read-only values from the BALANCE - CAMP worksheet. Cached Excel TOTAL values are shown as supplied.
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
-          <label className="text-xs font-semibold text-slate-600">Search code, category, sub-category, or material</label>
+          <label className="text-xs font-semibold text-slate-600">Search items</label>
           <input className={inputClass} value={balanceSearch} onChange={(e) => setBalanceSearch(e.target.value)} />
           <p className="mt-2 text-xs text-slate-500">{visibleBalance.length} of {balanceRows.length} materials</p>
         </div>
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-xs">
           <table className="w-full text-left text-xs">
             <thead className="border-b border-slate-100 bg-slate-50 font-semibold text-slate-500">
-              <tr><th className="px-3 py-2">Code</th><th className="px-3 py-2">Category</th><th className="px-3 py-2">Sub-category</th><th className="px-3 py-2">Material</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2 text-right">C013</th><th className="px-3 py-2 text-right">Total</th></tr>
+              <tr><th className="px-3 py-2">Items</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2 text-right">TOTAL</th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {visibleBalance.map((row, index) => (
                 <tr key={`${row.code}|${row.item}|${index}`} className="hover:bg-slate-50/80">
-                  <td className="px-3 py-2">{row.code}</td><td className="px-3 py-2">{row.category}</td><td className="px-3 py-2">{row.subCategory}</td>
                   <td className="px-3 py-2 font-medium text-slate-900">{row.item}</td><td className="px-3 py-2">{row.unit}</td>
-                  <td className="px-3 py-2 text-right font-semibold">{row.campQuantity}</td><td className="px-3 py-2 text-right">{row.totalQuantity}</td>
+                  <td className="px-3 py-2 text-right">{row.totalQuantity}</td>
                 </tr>
               ))}
-              {visibleBalance.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No balance rows match.</td></tr>}
+              {visibleBalance.length === 0 && <tr><td colSpan={3} className="px-3 py-6 text-center text-slate-400">No balance rows match.</td></tr>}
             </tbody>
           </table>
         </div>
