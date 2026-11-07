@@ -1,14 +1,21 @@
 import { flattenSubmission } from './iomRecords.ts';
-import { iomSheets, iomWorkbook, excelDateSerial } from './iomExcel.ts';
+import { iomSheets, iomWorkbook, excelDateSerial, parseIomBalanceSheet } from './iomExcel.ts';
+import { buildXlsx } from './xlsxWriter.ts';
 
 const assert = (c: unknown, m: string) => { if (!c) throw new Error('FAIL: ' + m); };
 const rows = [
-  ...flattenSubmission({ _id: 1, sd_storage: '13', entry_date: '2026-06-28', inventory_type: 'Dispatched', mrf_no: '34215', drr_code: 'C013-D-1', waybill_no: 'W1',
-    rpt_items: [{ 'rpt_items/items': 'Sand', 'rpt_items/unit': 'Cum', 'rpt_items/quantity': '0.170', 'rpt_items/code': '68' }] }),
-  ...flattenSubmission({ _id: 2, entry_date: '2026-06-28', inventory_type: 'Received', supplier: 'Ayan Corporation', po_number: '0042', grn_number: '77',
-    rpt_items: [{ 'rpt_items/items': 'Cement', 'rpt_items/unit': 'Bag', 'rpt_items/quantity': '100' }] }),
-  ...flattenSubmission({ _id: 3, entry_date: '2026-06-28', inventory_type: 'Returned', mrf_no: '34873',
-    rpt_items: [{ 'rpt_items/items': 'Bricks', 'rpt_items/unit': 'Pcs', 'rpt_items/quantity': '200' }] }),
+  ...flattenSubmission({
+    _id: 1, sd_storage: '13', entry_date: '2026-06-28', inventory_type: 'Dispatched', mrf_no: '34215', drr_code: 'C013-D-1', waybill_no: 'W1',
+    rpt_items: [{ 'rpt_items/items': 'Sand', 'rpt_items/unit': 'Cum', 'rpt_items/quantity': '0.170', 'rpt_items/code': '68' }]
+  }),
+  ...flattenSubmission({
+    _id: 2, entry_date: '2026-06-28', inventory_type: 'Received', supplier: 'Ayan Corporation', po_number: '0042', grn_number: '77',
+    rpt_items: [{ 'rpt_items/items': 'Cement', 'rpt_items/unit': 'Bag', 'rpt_items/quantity': '100' }]
+  }),
+  ...flattenSubmission({
+    _id: 3, entry_date: '2026-06-28', inventory_type: 'Returned', mrf_no: '34873',
+    rpt_items: [{ 'rpt_items/items': 'Bricks', 'rpt_items/unit': 'Pcs', 'rpt_items/quantity': '200' }]
+  }),
 ];
 const s = iomSheets(rows);
 assert(s.map((x) => x.name).join('|') === 'All records|Received|Dispatched|Returned', 'sheet names');
@@ -23,4 +30,16 @@ assert(excelDateSerial('2026-06-28') === 46201, 'date serial');
 const bytes = iomWorkbook(rows);
 assert(bytes[0] === 0x50 && bytes[1] === 0x4b, 'zip signature');
 assert(iomWorkbook([]).length > 0, 'empty workbook still builds');
+const balanceWorkbook = buildXlsx([{
+  name: 'BALANCE - CAMP', header: ['code', 'category', 'sub_category', 'items', 'unit', 'C013', 'TOTAL'], widths: [], rows: [
+    [{ t: 'n', v: '1', scale: 0 }, { t: 's', v: 'Equipment' }, { t: 's', v: 'Compactor' }, { t: 's', v: 'Steel compactor' }, { t: 's', v: 'Pcs' }, { t: 'n', v: '7', scale: 0 }, { t: 'n', v: '7', scale: 0 }],
+  ]
+}]);
+const importedBalance = parseIomBalanceSheet(balanceWorkbook);
+assert(importedBalance.length === 1 && importedBalance[0].item === 'Steel compactor', 'balance sheet material parsed');
+assert(importedBalance[0].campQuantity === '7' && importedBalance[0].totalQuantity === '7', 'camp and total quantities parsed');
+let missingBalanceSheet = false;
+try { parseIomBalanceSheet(buildXlsx([{ name: 'Other', header: ['items', 'unit', 'C013'], widths: [], rows: [] }])); }
+catch { missingBalanceSheet = true; }
+assert(missingBalanceSheet, 'missing balance worksheet rejected');
 console.log('iomExcel tests passed');

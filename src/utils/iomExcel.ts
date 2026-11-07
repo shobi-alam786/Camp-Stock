@@ -6,6 +6,132 @@
  */
 import type { IomRow } from './iomRecords.ts';
 import { buildXlsx, XlsxCell, XlsxSheet } from './xlsxWriter.ts';
+import { strFromU8, unzipSync } from 'fflate';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
+
+export interface IomBalanceRow {
+  code: string;
+  category: string;
+  subCategory: string;
+  item: string;
+  unit: string;
+  campQuantity: string;
+  totalQuantity: string;
+}
+
+type XmlValue = string | number | XmlValue[] | { [key: string]: XmlValue | undefined } | undefined;
+
+const asArray = <T>(value: T | T[] | undefined): T[] => value === undefined ? [] : Array.isArray(value) ? value : [value];
+
+function parseWorkbookXml(xml: string, label: string): Record<string, XmlValue> {
+  const validation = XMLValidator.validate(xml);
+  if (validation !== true) throw new Error(`Invalid ${label} XML.`);
+  return new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', parseTagValue: false, parseAttributeValue: false }).parse(xml);
+}
+
+function xmlText(value: XmlValue): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return value.map(xmlText).join('');
+  if ('#text' in value) return xmlText(value['#text']);
+  return Object.values(value).map(xmlText).join('');
+}
+
+function columnIndex(reference: string): number {
+  const letters = reference.match(/^[A-Z]+/i)?.[0].toUpperCase() ?? '';
+  return [...letters].reduce((index, letter) => index * 26 + letter.charCodeAt(0) - 64, 0) - 1;
+}
+
+function resolveWorkbookPath(target: string): string {
+  const segments: string[] = [];
+  for (const segment of (target.startsWith('/') ? target.slice(1) : `xl/${target}`).split('/')) {
+    if (segment === '..') segments.pop();
+    else if (segment && segment !== '.') segments.push(segment);
+  }
+  return segments.join('/');
+}
+
+/** Read the Camp 13 balance snapshot from the BALANCE - CAMP worksheet. */
+export function parseIomBalanceSheet(bytes: Uint8Array): IomBalanceRow[] {
+  const files = unzipSync(bytes);
+  const readXml = (path: string) => {
+    const data = files[path];
+    if (!data) throw new Error(`Workbook is missing ${path}.`);
+    return parseWorkbookXml(strFromU8(data), path);
+  };
+  const workbook = readXml('xl/workbook.xml');
+  const relationships = readXml('xl/_rels/workbook.xml.rels');
+  const workbookNode = workbook.workbook as Record<string, XmlValue> | undefined;
+  const sheetsNode = workbookNode?.sheets as Record<string, XmlValue> | undefined;
+  const sheets = asArray(sheetsNode?.sheet as Record<string, XmlValue> | Record<string, XmlValue>[] | undefined);
+  const normalize = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const sheet = sheets.find((entry) => normalize(String(entry['@_name'] ?? '')) === 'balancecamp');
+  if (!sheet) throw new Error('The workbook does not contain a BALANCE - CAMP sheet.');
+
+  const relationshipNode = relationships.Relationships as Record<string, XmlValue> | undefined;
+  const relationshipEntries = asArray(relationshipNode?.Relationship as Record<string, XmlValue> | Record<string, XmlValue>[] | undefined);
+  const relationshipId = String(sheet['@_r:id'] ?? '');
+  const relationship = relationshipEntries.find((entry) => entry['@_Id'] === relationshipId);
+  const target = relationship?.['@_Target'];
+  if (typeof target !== 'string') throw new Error('Could not locate the BALANCE - CAMP worksheet data.');
+
+  const sharedStrings: string[] = [];
+  if (files['xl/sharedStrings.xml']) {
+    const shared = readXml('xl/sharedStrings.xml');
+    const stringTable = shared.sst as Record<string, XmlValue> | undefined;
+    for (const entry of asArray(stringTable?.si as XmlValue | XmlValue[] | undefined)) sharedStrings.push(xmlText(entry));
+  }
+
+  const worksheet = readXml(resolveWorkbookPath(target));
+  const worksheetNode = worksheet.worksheet as Record<string, XmlValue> | undefined;
+  const sheetData = worksheetNode?.sheetData as Record<string, XmlValue> | undefined;
+  const worksheetRows = asArray(sheetData?.row as Record<string, XmlValue> | Record<string, XmlValue>[] | undefined);
+  const cellValues = (row: Record<string, XmlValue>) => {
+    const values = new Map<number, string>();
+    for (const cell of asArray(row.c as Record<string, XmlValue> | Record<string, XmlValue>[] | undefined)) {
+      const index = columnIndex(String(cell['@_r'] ?? ''));
+      const value = cell.v;
+      const type = cell['@_t'];
+      if (index < 0) continue;
+      if (type === 's') {
+        const sharedIndex = Number(xmlText(value));
+        values.set(index, sharedStrings[sharedIndex] ?? '');
+      } else if (type === 'inlineStr') values.set(index, xmlText(cell.is));
+      else values.set(index, xmlText(value));
+    }
+    return values;
+  };
+
+  const headerRowIndex = worksheetRows.findIndex((row) => cellValues(row).size > 0);
+  if (headerRowIndex < 0) throw new Error('The BALANCE - CAMP sheet is empty.');
+  const headers = cellValues(worksheetRows[headerRowIndex]);
+  const headerIndex = (names: string[]) => Array.from(headers.entries()).find(([, value]) => names.includes(normalize(value)))?.[0];
+  const codeIndex = headerIndex(['code']);
+  const categoryIndex = headerIndex(['category']);
+  const subCategoryIndex = headerIndex(['subcategory']);
+  const itemIndex = headerIndex(['items', 'item', 'material']);
+  const unitIndex = headerIndex(['unit']);
+  const campIndex = headerIndex(['c013', 'camp13']);
+  const totalIndex = headerIndex(['total']);
+  if (itemIndex === undefined || unitIndex === undefined || campIndex === undefined) {
+    throw new Error('BALANCE - CAMP must include items, unit, and C013 columns.');
+  }
+
+  return worksheetRows.slice(headerRowIndex + 1).flatMap((row) => {
+    const values = cellValues(row);
+    const item = values.get(itemIndex) ?? '';
+    if (!item) return [];
+    return [{
+      code: codeIndex === undefined ? '' : values.get(codeIndex) ?? '',
+      category: categoryIndex === undefined ? '' : values.get(categoryIndex) ?? '',
+      subCategory: subCategoryIndex === undefined ? '' : values.get(subCategoryIndex) ?? '',
+      item,
+      unit: values.get(unitIndex) ?? '',
+      campQuantity: values.get(campIndex) ?? '',
+      totalQuantity: totalIndex === undefined ? '' : values.get(totalIndex) ?? '',
+    }];
+  });
+}
 
 export type Kind = 'text' | 'id' | 'date' | 'qty';
 interface Col { header: string; kind: Kind; get: (r: IomRow) => string; width?: number }

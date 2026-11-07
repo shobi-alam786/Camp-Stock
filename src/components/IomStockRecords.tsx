@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { DateField } from './DateField.tsx';
 import { inputClass } from './LinesEditor.tsx';
 import { todayText } from '../utils/form.ts';
@@ -7,7 +7,7 @@ import {
   EMPTY_FILTERS, IOM_DEFAULT_SERVER, IOM_DEFAULT_UID, IomFilters, IomRow,
   distinct, filterRows, formatQty, parseDataUrl, totalsByMaterial,
 } from '../utils/iomRecords.ts';
-import { iomWorkbook } from '../utils/iomExcel.ts';
+import { IomBalanceRow, iomWorkbook, parseIomBalanceSheet } from '../utils/iomExcel.ts';
 import { iomLockedSeconds, loadIomSettings, saveIomSettings, verifyIomPassword } from '../utils/iomAccess.ts';
 
 const PAGE = 300;
@@ -33,7 +33,12 @@ export function IomStockRecords() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [limit, setLimit] = useState(PAGE);
-  const [view, setView] = useState<'records' | 'totals'>('records');
+  const [view, setView] = useState<'records' | 'totals' | 'balance'>('records');
+  const [balanceRows, setBalanceRows] = useState<IomBalanceRow[]>([]);
+  const [balanceSearch, setBalanceSearch] = useState('');
+  const [balanceSource, setBalanceSource] = useState('');
+  const [balanceBusy, setBalanceBusy] = useState(false);
+  const balanceFileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (wait <= 0) return;
@@ -46,6 +51,11 @@ export function IomStockRecords() {
   const totals = useMemo(() => totalsByMaterial(visible), [visible]);
   const submissionsShown = useMemo(() => new Set(visible.map((r) => r.koboId)).size, [visible]);
   const typeList = useMemo(() => distinct(rows, (r) => r.inventoryType), [rows]);
+  const visibleBalance = useMemo(() => {
+    const query = balanceSearch.trim().toLowerCase();
+    if (!query) return balanceRows;
+    return balanceRows.filter((row) => [row.code, row.category, row.subCategory, row.item, row.unit].some((value) => value.toLowerCase().includes(query)));
+  }, [balanceRows, balanceSearch]);
 
   const unlock = async () => {
     const r = await verifyIomPassword(pw);
@@ -63,6 +73,21 @@ export function IomStockRecords() {
     if (res.error) { setError(res.error); return; }
     setRows(res.rows); setLoaded(true);
     setMessage(`${res.submissions} submission(s) loaded for ${rangeMode ? `${from} to ${to}` : from}${res.skippedDuplicates ? `, ${res.skippedDuplicates} duplicate(s) skipped` : ''}.`);
+  };
+
+  const importBalance = async (file?: File) => {
+    if (!file) return;
+    setBalanceBusy(true); setError(''); setMessage('');
+    try {
+      const imported = parseIomBalanceSheet(new Uint8Array(await file.arrayBuffer()));
+      setBalanceRows(imported); setBalanceSource(file.name); setBalanceSearch(''); setView('balance');
+      setMessage(`${imported.length} material balance(s) loaded from ${file.name}.`);
+    } catch (e: any) {
+      setError(e?.message || 'Could not read the Excel balance sheet.');
+    } finally {
+      setBalanceBusy(false);
+      if (balanceFileInput.current) balanceFileInput.current.value = '';
+    }
   };
 
   /** One Excel file with 4 sheets: All records, Received, Dispatched, Returned. */
@@ -127,10 +152,50 @@ export function IomStockRecords() {
     );
   }
 
+  if (view === 'balance') {
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setView('records')}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">← Back to IOM Stock Records</button>
+            <h3 className="text-base font-bold text-slate-900">Camp Balance</h3>
+          </div>
+          <p className="text-xs text-slate-500">Source: {balanceSource} · BALANCE - CAMP · C013</p>
+        </div>
+        <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
+          Imported balance snapshot. Camp quantity is read from C013; TOTAL is shown separately. This does not change Kobo records or Camp Stock balances.
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+          <label className="text-xs font-semibold text-slate-600">Search code, category, sub-category, or material</label>
+          <input className={inputClass} value={balanceSearch} onChange={(e) => setBalanceSearch(e.target.value)} />
+          <p className="mt-2 text-xs text-slate-500">{visibleBalance.length} of {balanceRows.length} materials</p>
+        </div>
+        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-xs">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-slate-100 bg-slate-50 font-semibold text-slate-500">
+              <tr><th className="px-3 py-2">Code</th><th className="px-3 py-2">Category</th><th className="px-3 py-2">Sub-category</th><th className="px-3 py-2">Material</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2 text-right">C013</th><th className="px-3 py-2 text-right">Total</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {visibleBalance.map((row, index) => (
+                <tr key={`${row.code}|${row.item}|${index}`} className="hover:bg-slate-50/80">
+                  <td className="px-3 py-2">{row.code}</td><td className="px-3 py-2">{row.category}</td><td className="px-3 py-2">{row.subCategory}</td>
+                  <td className="px-3 py-2 font-medium text-slate-900">{row.item}</td><td className="px-3 py-2">{row.unit}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{row.campQuantity}</td><td className="px-3 py-2 text-right">{row.totalQuantity}</td>
+                </tr>
+              ))}
+              {visibleBalance.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No balance rows match.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
-        Read-only IOM records for Camp 13. Nothing here changes Camp Stock records or balances.
+        Read-only IOM records for Camp 13. Loading Kobo records or Excel balances only changes this view.
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
@@ -166,6 +231,11 @@ export function IomStockRecords() {
           <button onClick={() => void load()} disabled={busy}
             className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-50">
             {busy ? 'Loading...' : 'Load from IOM Kobo'}
+          </button>
+          <input ref={balanceFileInput} type="file" accept=".xlsx" className="hidden" onChange={(e) => void importBalance(e.target.files?.[0])} />
+          <button onClick={() => balanceFileInput.current?.click()} disabled={balanceBusy}
+            className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50">
+            {balanceBusy ? 'Importing...' : 'Import Camp Balance Excel'}
           </button>
           {loaded && <button onClick={exportExcel} disabled={visible.length === 0}
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">Export Excel (4 sheets)</button>}
